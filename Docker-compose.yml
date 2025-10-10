@@ -1,0 +1,98 @@
+# docker-compose.yml
+name: mern-stack
+
+services:
+  # 1) API (Node/Express)
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    container_name: mern-api
+    working_dir: /usr/src/app
+    command: sh -lc "npm ci || npm install && npm run dev"
+    environment:
+      NODE_ENV: development
+      PORT: "5000"
+      MONGO_URI: "mongodb://mongo:27017/mern?retryWrites=true&w=majority"
+      # CORS 向け（必要に応じて変更）
+      CLIENT_ORIGIN: "http://localhost:5173"
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./api:/usr/src/app
+    depends_on:
+      mongo:
+        condition: service_healthy
+    networks: [mern_net]
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"http=require('http');r=http.request({host:'localhost',port:5000,path:'/health'},res=>process.exit(res.statusCode===200?0:1));r.on('error',()=>process.exit(1));r.end()\""]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  # 2) Client (React + Vite)
+  client:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+    container_name: mern-client
+    working_dir: /usr/src/app
+    command: sh -lc "npm ci || npm install && npm run dev -- --host --strictPort"
+    environment:
+      # Windows/WSL のファイル監視を安定化
+      CHOKIDAR_USEPOLLING: "true"
+      WATCHPACK_POLLING: "true"
+      VITE_FS_USE_POLLING: "true"
+      # API のオリジンをフロントに渡す
+      VITE_API_ORIGIN: "http://localhost:5000"
+    ports:
+      - "5173:5173"   # Vite dev
+      - "24678:24678" # HMR WebSocket 明示
+    volumes:
+      - ./client:/usr/src/app
+    depends_on:
+      api:
+        condition: service_started
+    networks: [mern_net]
+
+  # 3) MongoDB
+  mongo:
+    image: mongo:7-jammy
+    container_name: mern-mongo
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_DATABASE: mern
+    volumes:
+      - mongo_data:/data/db
+      # 初期データ/ユーザが必要なら ./mongo/init.js をここに置く
+      # - ./mongo/init.js:/docker-entrypoint-initdb.d/init.js:ro
+    networks: [mern_net]
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --eval 'db.runCommand({ ping: 1 }).ok' | grep 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # 4) Mongo Express (任意: ブラウザ管理ツール)
+  mongo-express:
+    image: mongo-express:1.0.2-18
+    profiles: ["tools"]         # ← `--profile tools` で有効化
+    container_name: mern-me
+    ports:
+      - "8081:8081"
+    environment:
+      ME_CONFIG_MONGODB_URL: "mongodb://mongo:27017/mern"
+      ME_CONFIG_BASICAUTH_USERNAME: admin
+      ME_CONFIG_BASICAUTH_PASSWORD: secret123
+    depends_on:
+      mongo:
+        condition: service_started
+    networks: [mern_net]
+
+networks:
+  mern_net:
+    driver: bridge
+
+volumes:
+  mongo_data:
